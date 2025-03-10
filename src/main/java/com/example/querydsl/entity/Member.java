@@ -1,2 +1,45 @@
-package com.example.querydsl.entity;public class Member {
+package com.example.querydsl.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+@Entity
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+@Setter
+@ToString(of = {"id","username","age"})
+public class Member {
+
+    @Id
+    @GeneratedValue
+    private Long id;
+
+    private String username;
+
+    private int age;
+    
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "team_id")
+    private Team team;
+    
+    public Member(String username, int age,Team team) {
+        this.username = username;
+        this.age = age;
+        if (team != null){
+            changeTeam(team);
+        }
+    }
+
+    public Member(String username, int age) {
+        this(username, age, null);
+    }
+
+    public Member(String username) {
+        this(username, 0);
+    }
+
+    private void changeTeam(Team team) {
+        this.team = team;
+        team.getMembers().add(this);
+    }
 }
