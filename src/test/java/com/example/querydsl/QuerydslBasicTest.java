@@ -2,8 +2,10 @@ package com.example.querydsl;
 
 import com.example.querydsl.entity.Member;
 import com.example.querydsl.entity.QMember;
+import com.example.querydsl.entity.QTeam;
 import com.example.querydsl.entity.Team;
 import com.querydsl.core.QueryResults;
+import com.querydsl.core.Tuple;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 import static com.example.querydsl.entity.QMember.member;
+import static com.example.querydsl.entity.QTeam.team;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
@@ -253,5 +256,69 @@ public class QuerydslBasicTest {
         assertThat(result.getTotal()).isEqualTo(4);
         assertThat(result.getLimit()).isEqualTo(2);
         assertThat(result.getResults().size()).isEqualTo(2);
+    }
+
+
+    @Test
+    @DisplayName("집합")
+    public void aggregation(){
+        // QueryDSL이 제공하는 Tuple타입으로 반환됨
+        List<Tuple> result = queryFactory
+                .select(
+                        member.count(),
+                        member.age.sum(),
+                        member.age.max(),
+                        member.age.avg())
+                .from(member)
+                .fetch();
+
+        Tuple tuple = result.get(0);
+        assertThat(tuple.get(member.age.sum())).isEqualTo(100);
+
+        /**
+         * 데이터 타입이 다양하기 때문에 튜플로 반환함
+         * 실제 실무에서는 DTO에 맞게 반환하는 것이 가능하기 때문에 DTO를 틀로서 가져옴
+         * */
+    }
+
+
+    @Test
+    @DisplayName("group by")
+    public void group(){
+
+        List<Tuple> result = queryFactory
+                .select(team.name,
+                        member.age.avg())
+                .from(member)
+                .join(member.team, team)
+                .groupBy(team.name)
+                .fetch();
+
+        Tuple teamA = result.get(0);
+        Tuple teamB = result.get(1);
+
+        assertThat(teamA.get(team.name)).isEqualTo("teamA");
+        assertThat(teamA.get(member.age.avg())).isEqualTo(15);
+
+        assertThat(teamB.get(team.name)).isEqualTo("teamB");
+    }
+
+
+    /**
+     * 팀 A에 소속된 모든 회원
+     * */
+    @Test
+    @DisplayName("join")
+    public void join(){
+
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .join(member.team, team)
+                .where(team.name.eq("teamA"))
+                .fetch();
+
+        assertThat(result)
+                .extracting("username")
+                .containsExactly("member1","member2");
     }
 }
