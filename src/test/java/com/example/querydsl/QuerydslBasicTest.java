@@ -2,12 +2,15 @@ package com.example.querydsl;
 
 import com.example.querydsl.entity.Member;
 import com.example.querydsl.entity.QMember;
-import com.example.querydsl.entity.QTeam;
 import com.example.querydsl.entity.Team;
 import com.querydsl.core.QueryResults;
 import com.querydsl.core.Tuple;
+import com.querydsl.core.types.dsl.CaseBuilder;
+import com.querydsl.jpa.JPAExpressions;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+import jakarta.persistence.PersistenceUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,7 +22,9 @@ import java.util.List;
 
 import static com.example.querydsl.entity.QMember.member;
 import static com.example.querydsl.entity.QTeam.team;
+import static com.querydsl.jpa.JPAExpressions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.from;
 
 @SpringBootTest
 @Transactional
@@ -311,6 +316,9 @@ public class QuerydslBasicTest {
     @DisplayName("join")
     public void join(){
 
+        /**
+         * 기본 SQL과 JPQL에 대한 이해가 더 필요해보인다
+         * */
         List<Member> result = queryFactory
                 .selectFrom(member)
                 .join(member.team, team)
@@ -320,5 +328,239 @@ public class QuerydslBasicTest {
         assertThat(result)
                 .extracting("username")
                 .containsExactly("member1","member2");
+    }
+
+
+    /**
+     * 회원과 팀을 조인하면서, 팀 이름이 teamA인 팀만 조인, 회원은 모두 조인
+     *
+     * result:
+     * tuple: [Member(id=1, username=member1, age=10), Team(id=1, name=teamA)]
+     * tuple: [Member(id=2, username=member2, age=20), Team(id=1, name=teamA)]
+     * tuple: [Member(id=3, username=member3, age=30), null]
+     * tuple: [Member(id=4, username=member4, age=40), null]
+     *
+     * 그냥 join의 경우는 뒤에 where로 쓰면 되지만
+     * left/right 조인의 경우는 where가 적용되지 않기 때문에 on을 사용해줘야함
+     * */
+    @Test
+    @DisplayName("join on")
+    public void join_on(){
+        List<Tuple> fetch = queryFactory
+                .select(member, team)
+                .from(member)
+                .leftJoin(member.team, team)
+                .on(team.name.eq("teamA"))
+                .fetch();
+
+        for (Tuple tuple : fetch) {
+            System.out.println("tuple: " + tuple);
+        }
+    }
+
+    @PersistenceUnit
+    EntityManagerFactory emf;
+
+
+    /**
+     * 조인 쿼리 시, 쿼리를 두 번 날리는 게 아닌 한 방에 날릴 수 있는 방법
+     * -> 성능 최적화에서 많이 사용된다
+     *
+     * 한 방 쿼리에 너무 집착하지는 말자
+     * 객관적으로 생각해보자 당신의 서비스는 정말 그렇게 까지 최적화가 필요한가?
+     * 그런게 아니라면 너무 집착하지는 말자
+     * */
+    @Test
+    @DisplayName("페치조인을 사용하지 않음_1")
+    public void fetch_join_no(){
+        em.flush();
+        em.clear();
+
+        Member result = queryFactory
+                .selectFrom(member)
+                .where(member.username.eq("member1"))
+                .fetchOne();
+
+        boolean loaded = emf.getPersistenceUnitUtil().isLoaded(result.getTeam());
+        assertThat(loaded).as("페치 조인 미적용").isFalse();
+    }
+
+
+    @Test
+    @DisplayName("페치조인을 사용하지 않음_2")
+    public void fetch_join_no2(){
+        em.flush();
+        em.clear();
+
+        Member result = queryFactory
+                .selectFrom(member)
+                .join(member.team,team)
+                .where(member.username.eq("member1"))
+                .fetchOne();
+
+        boolean loaded = emf.getPersistenceUnitUtil().isLoaded(result.getTeam());
+        assertThat(loaded).as("페치 조인 미적용").isFalse();
+    }
+
+
+
+    @Test
+    @DisplayName("페치조인")
+    public void fetch_join_use(){
+        em.flush();
+        em.clear();
+
+        Member result = queryFactory
+                .selectFrom(member)
+                .join(member.team,team)
+                .fetchJoin()
+                .where(member.username.eq("member1"))
+                .fetchOne();
+
+        boolean loaded = emf.getPersistenceUnitUtil().isLoaded(result.getTeam());
+        assertThat(loaded).as("페치 조인 미적용").isTrue();
+    }
+
+
+    /**
+     * 나이가 가장 많은 회원을 조회
+     *
+     * JPAExpressions를 이용하고 static-import 해주면 일반 쿼리처럼 사용 가능
+     *
+     * 하지만 From 절의 서브쿼리는 사용 할 수 없음
+     * -> 보통 서브쿼리는 조인으로 해결이 가능하기 때문에 조인으로 바꾸는 방법을 고민해보기
+     * -> 쿼리를 두 번으로 나누어서 실행하기
+     * -> nativeSQL 사용하기
+     *
+     * 보통 from 안에 서브쿼리를 사용하는 경우는
+     * 너무 많고 복잡한 정보를 쿼리를 통해서 가져오려 하기 때문임
+     * 이는 좋지 않음. 서비스 로직에서 바꾸던지, 앞단에게 부탁하던지 해야지 모든 로직을 쿼리로 해결하려하면 재사용성이나 완전성에 무결함을 해칠 수 있음
+     *
+     * 최대한 DB는 데이터를 퍼올리는 정도로만 사용하자
+     * */
+    @Test
+    @DisplayName("서브쿼리")
+    public void sub_Query(){
+
+        // 서브쿼리는 식별자가 달라야해서 QMember를 다시 정의해줘야함 뭔지 알지?
+        QMember memberSub = new QMember("memberSub");
+
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.eq(
+                        select(memberSub.age.max())
+                                .from(memberSub)
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(40);
+    }
+
+
+
+    /**
+     * 나이가 평균 이상인 회원
+     * */
+    @Test
+    @DisplayName("서브쿼리2")
+    public void sub_Query2(){
+
+        // 서브쿼리는 식별자가 달라야해서 QMember를 다시 정의해줘야함 뭔지 알지?
+        QMember memberSub = new QMember("memberSub");
+
+        // goe = 크거나 같다
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.goe(
+                        select(memberSub.age.avg())
+                                .from(memberSub)
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(30,40);
+    }
+
+
+    /**
+     * 나이가 평균 이상인 회원
+     * */
+    @Test
+    @DisplayName("서브쿼리 - in")
+    public void sub_Query_in(){
+
+        // 서브쿼리는 식별자가 달라야해서 QMember를 다시 정의해줘야함 뭔지 알지?
+        QMember memberSub = new QMember("memberSub");
+
+        // goe = 크거나 같다
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.in(
+                        select(memberSub.age)
+                                .from(memberSub)
+                                .where(memberSub.age.gt(10))
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(20,30,40);
+    }
+
+
+    @Test
+    @DisplayName("select_subQuery")
+    public void select_subQuery(){
+
+        QMember memberSub = new QMember("memberSub");
+
+        List<Tuple> result = queryFactory
+                .select(member.username,
+                        select(memberSub.age.avg())
+                                .from(memberSub))
+                .from(member)
+                .fetch();
+
+        for (Tuple tuple : result) {
+            System.out.println("tuple: " + tuple);
+        }
+    }
+
+
+    @Test
+    @DisplayName("case문")
+    public void basic_case(){
+        List<String> result = queryFactory
+                .select(member.age
+                        .when(10).then("10살")
+                        .when(20).then("스무살")
+                        .otherwise("기타"))
+                .from(member)
+                .fetch();
+
+        for (String s : result) {
+            System.out.println("s: " + s);
+        }
+    }
+
+
+    /**
+     * 이런 로직을 SQL로 해결하려 하지 말아라
+     * 이건 예제니까 하는거지
+     * 웬만하면 애플리케이션 로직에서 해야함
+     * */
+    @Test
+    @DisplayName("complexCase")
+    public void complexCase(){
+        List<String> result = queryFactory
+                .select(new CaseBuilder()
+                        .when(member.age.between(0,20)).then("0살~20살")
+                        .otherwise("기타"))
+                .from(member)
+                .fetch();
+
+        for (String s : result) {
+            System.out.println("s: " + s);
+        }
     }
 }
